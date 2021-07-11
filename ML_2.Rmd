@@ -1,0 +1,131 @@
+---
+title: "Homework_2"
+author: "Lindley Slipetz"
+date: "7/11/2021"
+output: pdf_document
+---
+
+For this homework, I will be using the Childhood adversity and traumatic stress among inpatients at a psychiatric hospital in the Baltimore area from 1993-1995. The data include diagnoses, psychological symptoms, physical and sexual abuse, post-traumatic stress disorder, self-destructive behavior, and demographic data. I will be predicting psychoticism from gender, SES, age, occurrence of mood disorder, paranoid ideation, and level of substance abuse.
+
+Let's load the data and packages!
+
+```{r load, warning = FALSE, message = FALSE}
+library(caret)
+#install.packages("glmnet")
+library(glmnet)
+library(pROC)
+library(tidyverse)
+#install.packages("e1071")
+library(e1071)
+full_data <- read.table(file = 'G:\\My Drive\\ICPSR\\ML\\HW_2\\36168-0001-Data.tsv', sep = '\t', header = TRUE)
+```
+
+Okay, let's subset our data to just the variables we're interested in.
+
+```{r subset}
+subset_data <- full_data %>%
+  select(PSYCDX, SEX, SES, MOODDX, SCL_PAR, SISDB_SUB, AGE)
+```
+
+Now we're going to check if there's any missing data.
+
+```{r NA_check}
+df <- as.data.frame(
+  cbind(
+    lapply(
+      lapply(subset_data, is.na), sum)
+    )
+  )
+
+rownames(subset(df, df$V1 != 0))
+```
+
+Okay, SCL_PAR, and SISDB_SUB have missing values. Let's see how much of a problem this is.
+
+```{r NA_sum}
+sum(is.na(subset_data$SCL_PAR))
+sum(is.na(subset_data$SISDB_SUB))
+```
+
+That's not that much missing data (at least to me). I think we'd be safe to just omit the data with NA.
+
+```{r complete}
+complete_data <- na.omit(subset_data)
+```
+
+Dummy encoding.
+
+```{r encode}
+complete_data$PSYCDX <- factor(complete_data$PSYCDX, labels=c("non_psy", "psy"))
+createDummies <- dummyVars(~., complete_data[,-1], fullRank = TRUE)
+new.predictors <- predict(createDummies, complete_data[,-1])
+complete_data <- data.frame(PSYCDX = complete_data$PSYCDX, new.predictors)
+```
+
+Time to standardize the data.
+
+```{r standard}
+preProcValues <- preProcess(complete_data, method=c("center","scale"))
+complete_data <- predict(preProcValues, complete_data)
+```
+
+Splitting the data.
+
+```{r split}
+set.seed(1985)
+trainIndex <- createDataPartition(complete_data$PSYCDX, p=0.7, list=FALSE)
+train <- complete_data[trainIndex,]
+test <- complete_data[-trainIndex,]
+
+```
+
+Set control parameters.
+
+```{r cntrl}
+fitCtrl <- trainControl(method = "repeatedcv",
+                        number = 3,
+                        repeats = 2,
+                        search = "random")
+```
+
+Set testing grid.
+
+```{r grid}
+glmnetGrid <- expand.grid(alpha=seq(0,1,by=0.1), lambda=seq(0,1,by=0.05))
+
+```
+
+Train model.
+
+```{r train}
+glmnet.res <- train(PSYCDX ~ .,
+    data=train,
+    method="glmnet",
+    trControl=fitCtrl,
+    tuneGrid=glmnetGrid,
+    metric="Accuracy")
+glmnet.res
+plot(glmnet.res)
+```
+
+The optimal values are $\alpha$ = 0 and $\lambda$ = 1. Since $\alpha$ is 0, this elastic net is ridge regression not lasso regression.
+
+Model performance.
+
+```{r perform}
+predclass <- predict(glmnet.res, test)
+table(predclass, test$PSYCDX[complete.cases(test)])
+predprob <- predict(glmnet.res, test, type="prob")[,"psy"]
+hist(predprob, col="skyblue", breaks=20)
+roc(test$PSYCDX[complete.cases(test)] ~ predprob)
+```
+I got an area under the curve of 1...that really makes me feel like something went wrong because I highly doubt I have a perfect model. Let's keep moving forward.
+
+Here we find the beta coefficients.
+
+```{r beta}
+fit.elasticnet <- glmnet(as.matrix(train[,-1]), as.numeric(train[,1]), family="binomial", alpha=0, lambda=1)
+fit.elasticnet$beta
+```
+
+Since my results suggested a ridge regression, none of my coefficients are actually shrunk to zero and that's expected. So, all of my predictors are included in the model.
